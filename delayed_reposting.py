@@ -3,13 +3,21 @@ import pickle
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from googleapiclient.errors import HttpError as google_http_error
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
+from pydrive.files import FileNotDownloadableError
 import urllib.parse as urlparse
 from reposting import run_reposting
 import os
 import os.path
+from os import getenv
 import glob
+from datetime import datetime
+import locale
+import calendar
+import time
+from dotenv import load_dotenv
 
 
 def read_article_file(article_path):
@@ -50,16 +58,12 @@ def download_data_for_posting(
             download_dir,
             article_name
         )
-
-    try:
-        img_file.GetContentFile(img_file_download_path)
-        article_file.GetContentFile(
-            article_download_path,
-            mimetype='text/plain'
-        )
-        return img_file_download_path, article_download_path
-    except:
-        pass
+    img_file.GetContentFile(img_file_download_path)
+    article_file.GetContentFile(
+        article_download_path,
+        mimetype='text/plain'
+    )
+    return img_file_download_path, article_download_path
 
 
 def connect_to_google(scopes):
@@ -87,82 +91,97 @@ def get_sheduller_data(
 ):
     value_render_option = 'FORMULA'
     sheet = service.spreadsheets()
-    result = sheet.values().get(
-        spreadsheetId=post_sheduller_sheet_id,
-        range=post_sheduller_cell_range,
-        valueRenderOption=value_render_option
-    ).execute()
-    print(result)
+    try:
+        result = sheet.values().get(
+            spreadsheetId=post_sheduller_sheet_id,
+            range=post_sheduller_cell_range,
+            valueRenderOption=value_render_option
+        ).execute()
+    except google_http_error:
+        return
     sheduller_data = result.get('values', [])
     return sheduller_data
 
 
 def handle_sheduller_data(sheduller_data):
-    print(sheduller_data)
-    if not sheduller_data:
-        print('Не удалось найти расписание публикациЙ!')
-    else:
-        sheduller_data_names = [
-            'vk',
-            'telegram',
-            'facebook',
-            'post_day',
-            'post_time',
-            'article_url',
-            'image_url',
-            'is_posted'
-        ]
-        handled_sheduller_data = []
-        for record in sheduller_data:
-            sheduller_record = dict(zip(
-                sheduller_data_names,
-                record)
-            )
-            handled_sheduller_data.append(sheduller_record)
-        return handled_sheduller_data
+    sheduller_data_names = [
+        'vk',
+        'telegram',
+        'facebook',
+        'post_day',
+        'post_time',
+        'article_url',
+        'image_url',
+        'is_posted'
+    ]
+    handled_sheduller_data = []
+    for record in sheduller_data:
+        sheduller_record = dict(zip(
+            sheduller_data_names,
+            record)
+        )
+        handled_sheduller_data.append(sheduller_record)
+    return handled_sheduller_data
 
 
-def execute_sheduller(handled_sheduller_data, download_dir=None):
-    for sheduller_record in handled_sheduller_data:
-        image_url = sheduller_record['image_url']
-        article_url = sheduller_record['article_url']
-        if image_url and article_url:
-            image_id = get_file_id(image_url)
-            article_id = get_file_id(article_url)
-            if (sheduller_record['post_day'] == 'суббота'
-                    and sheduller_record['is_posted'] == 'нет'):
-                post_to = []
-                for record_key in ['vk', 'telegram', 'facebook']:
-                    if sheduller_record[record_key]:
-                        post_to.append(record_key)
+def is_publish_date(day_str):
+    locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
+    today_datetime = datetime.now()
+    today_int = today_datetime.weekday()
+    today_str = calendar.day_name[today_int]
+    return today_str == day_str.capitalize()
+
+
+def execute_sheduller(sheduller_record, download_dir=None):
+    image_url = sheduller_record['image_url']
+    article_url = sheduller_record['article_url']
+    if image_url and article_url:
+        image_id = get_file_id(image_url)
+        article_id = get_file_id(article_url)
+        if (is_publish_date(sheduller_record['post_day'])
+                and sheduller_record['is_posted'] == 'нет'):
+            post_to = []
+            for record_key in ['vk', 'telegram', 'facebook']:
+                if sheduller_record[record_key]:
+                    post_to.append(record_key)
+            try:
                 img_file_path, article_path = download_data_for_posting(
                     image_id=image_id,
                     article_id=article_id,
                     download_dir=download_dir
                 )
-                article_content = read_article_file(article_path)
-                run_reposting(
-                    post_to,
-                    img_file_path=img_file_path,
-                    message=article_content
-                )
-                sheduller_record['is_posted'] = "Да"
-    print(handled_sheduller_data.values())
-    
+            except FileNotDownloadableError:
+                print("Проблема при загрузке файлов для постинга!")
+                return
+            article_content = read_article_file(article_path)
+            was_posted = run_reposting(
+                post_to,
+                img_file_path=img_file_path,
+                message=article_content
+            )
+            return was_posted
+
 
 def update_sheduller(
         service,
         post_sheduller_sheet_id,
-        post_sheduller_cell_range
+        post_sheduller_cell_range,
+        values
 ):
-    value_render_option = 'FORMULA'
-    sheet = service.spreadsheets()
-    result = sheet.values().get(
-        spreadsheetId=post_sheduller_sheet_id,
-        range=post_sheduller_cell_range,
-        valueRenderOption=value_render_option
-    ).execute()
-    sheduller_data = result.get('values', [])
+    value_input_option = 'USER_ENTERED'
+    body = {
+        'values': values
+    }
+    try:
+        result = service.spreadsheets().values().update(
+           spreadsheetId=post_sheduller_sheet_id,
+           range=post_sheduller_cell_range,
+           valueInputOption=value_input_option,
+           body=body
+        ).execute()
+    except google_http_error:
+        return
+    return bool(result)
 
 
 def truncate_folder(path_to_folder):
@@ -171,12 +190,13 @@ def truncate_folder(path_to_folder):
         os.remove(file)
 
 
-if __name__ == '__main__':
+def main():
+    load_dotenv()
     download_dir = 'tmp'
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
     scopes = ['https://www.googleapis.com/auth/spreadsheets']
-    post_sheduller_sheet_id = '1HbSI6IFkc2GK3MBwZCRxMHrhCOxzMxVG11203KK9Sx4'
+    post_sheduller_sheet_id = getenv('POST_SHEDULLER_SHEET_ID')
     post_sheduller_cell_range = 'Лист1!A3:H'
     google_service = connect_to_google(scopes)
     sheduller_data = get_sheduller_data(
@@ -184,10 +204,26 @@ if __name__ == '__main__':
         post_sheduller_sheet_id,
         post_sheduller_cell_range
     )
-    handled_sheduller_data = handle_sheduller_data(sheduller_data)
-    execute_sheduller(handled_sheduller_data, download_dir)
-    truncate_folder(download_dir)
+    if sheduller_data:
+        handled_sheduller_data = handle_sheduller_data(sheduller_data)
+        updated_sheduller_data = []
+        for sheduller_record in handled_sheduller_data:
+            was_posted = execute_sheduller(sheduller_record, download_dir)
+            if was_posted:
+                sheduller_record['is_posted'] = "да"
+            updated_sheduller_data.append(list(sheduller_record.values()))
+        sheduller_updated = update_sheduller(
+            google_service,
+            post_sheduller_sheet_id,
+            post_sheduller_cell_range,
+            updated_sheduller_data
+        )
+        if not sheduller_updated:
+            print("Возникла ошибка в процессе обновления расписания!")
+        truncate_folder(download_dir)
 
 
-
-
+if __name__ == '__main__':
+    while True:
+        main()
+        time.sleep(300)

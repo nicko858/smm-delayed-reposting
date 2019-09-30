@@ -124,7 +124,7 @@ def post_photo_to_vk_wall(
     try:
         response = requests.post(url, params=payload)
         response.raise_for_status()
-    except (ConnectionError, ResponseError):
+    except (ConnectionError, ResponseError, HTTPError):
         raise VkAPIUnavailable("{} is not available!".format(url))
     content = response.json()
     try:
