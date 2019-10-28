@@ -21,7 +21,7 @@ $ pip install -r requirements.txt
 - Настройте подключение к `google-drive` следуя [этой](https://gsuitedevs.github.io/PyDrive/docs/build/html/quickstart.html#authentication) инструкции
 - Создайте расписание в виде excel-листа [следующего вида](https://docs.google.com/spreadsheets/d/1HbSI6IFkc2GK3MBwZCRxMHrhCOxzMxVG11203KK9Sx4)
 - Запомните `sheet_id` из ссылки
-- Добавьте следующую запись в ваш `.env-file:`
+- Добавьте следующую запись в ваш файл `.env`:
   
   ```
   # google_env
@@ -29,7 +29,7 @@ $ pip install -r requirements.txt
   ```
 ## Как запускать
 
-```python delayed-reposting.py```
+```python delayed_reposting.py```
 
 
 ## Цели проекта
